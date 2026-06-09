@@ -9,9 +9,7 @@ function onFormSubmitTrigger(e) {
 
   var name = values["姓名"] ? values["姓名"][0] : "";
 
-  // ==========================================
-  // 【修正調整】先將所有核心欄位讀取進來，後續的格式化機關才吃得到資料！
-  // ==========================================
+  // 核心欄位
   var gender = values["生理性別"] ? values["生理性別"][0] : "";
   var idNumber = values["身份證字號"] ? values["身份證字號"][0] : "";
   var birth = values["出生年月日"] ? values["出生年月日"][0] : "";
@@ -27,14 +25,6 @@ function onFormSubmitTrigger(e) {
     ? values["資訊來源(可複選)"][0]
     : "";
   var consultTime = values["第一次諮商時間"] ? values["第一次諮商時間"][0] : "";
-  Logger.log(
-    "姓名：" +
-      name +
-      "，諮商時間：" +
-      consultTime +
-      "，型態：" +
-      typeof consultTime,
-  );
 
   // 彈性欄位
   var empId = values["員工編號"] ? values["員工編號"][0] : "無";
@@ -516,7 +506,7 @@ function sendDailyErrorSummaryEmail() {
   }
 }
 
-// // =========================================================================
+// =========================================================================
 // 第二模組：個案資料批發查詢與再製模組
 // =========================================================================
 function batchSearchAndGenerateWord() {
