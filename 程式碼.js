@@ -59,7 +59,8 @@ function onFormSubmitTrigger(e) {
   // (B) 處理諮商時間：轉成 m/d(星期) hh:mm (24小時制)
   var formattedConsultTime = "未提供時間";
   if (consultTime) {
-    var cDate = new Date(consultTime);
+    var cDate =
+      consultTime instanceof Date ? consultTime : new Date(consultTime);
 
     if (!isNaN(cDate.getTime())) {
       var month = cDate.getMonth() + 1;
@@ -692,7 +693,7 @@ function createMockEvent(sheet, row, headers) {
               " 上午 00:00:00",
           ];
         } else {
-          namedValues[headerName] = [rowValues[i].toString()];
+          namedValues[headerName] = [rowValues[i]];
         }
       } else {
         namedValues[headerName] = [
