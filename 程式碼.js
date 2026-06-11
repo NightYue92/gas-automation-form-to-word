@@ -444,6 +444,7 @@ function sendDailyErrorSummaryEmail() {
   var failureList = [];
 
   for (var i = 0; i < recordData.length; i++) {
+    var execTime = recordData[i][0];
     var company = recordData[i][1];
     var name = recordData[i][2];
     var status = recordData[i][3];
@@ -451,19 +452,54 @@ function sendDailyErrorSummaryEmail() {
     var phone = recordData[i][5];
     var time = recordData[i][6];
 
+    // 1. 處理【諮商時間】的整形手術
+    var formattedTime = "";
+    if (time instanceof Date) {
+      formattedTime = Utilities.formatDate(
+        time,
+        Session.getScriptTimeZone(),
+        "yyyy/MM/dd HH:mm",
+      );
+    } else {
+      formattedTime = time ? time.toString() : "未提供";
+    }
+
+    // 2. 處理【系統製作時間】的整形手術
+    var formattedExecTime = "";
+    if (execTime instanceof Date) {
+      formattedExecTime = Utilities.formatDate(
+        execTime,
+        Session.getScriptTimeZone(),
+        "MM/dd HH:mm",
+      );
+    } else {
+      formattedExecTime = execTime ? execTime.toString() : "未知時間";
+    }
+
     if (status === "成功") {
       successList.push(
-        "• [成功] " +
+        "• [" +
+          formattedExecTime +
+          " 成功] " +
           company +
           " " +
           name +
           " | 手機：" +
           phone +
-          "，來談時間：" +
+          " | 來談時間：" +
           time,
       );
     } else if (status === "失敗") {
-      failureList.push("• [錯誤] " + company + " " + name + " -> 原因：" + msg);
+      failureList.push(
+        "• [" +
+          formattedExecTime +
+          " 錯誤] " +
+          company +
+          " " +
+          name +
+          " -> 原因：" +
+          msg,
+      );
     }
   }
 
