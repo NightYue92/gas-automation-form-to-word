@@ -96,42 +96,50 @@ function onFormSubmitTrigger(e) {
   // ==========================================
   // 3. 利用「時間戳記」自動計算【跨年自動歸零】的流水號
   // ==========================================
-  var timestampStr = values["時間戳記"] ? values["時間戳記"][0] : "";
-  var currentYear = new Date().getFullYear();
+  var formattedSeq;
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000); // 等待最多 15 秒，超時會拋出例外
 
-  if (timestampStr) {
-    var dateParts = timestampStr.split(" ")[0].split("/");
-    if (dateParts.length === 3) {
-      currentYear = parseInt(dateParts[0], 10);
+    var timestampStr = values["時間戳記"] ? values["時間戳記"][0] : "";
+    var currentYear = new Date().getFullYear();
+
+    if (timestampStr) {
+      var dateParts = timestampStr.split(" ")[0].split("/");
+      if (dateParts.length === 3) {
+        currentYear = parseInt(dateParts[0], 10);
+      }
     }
-  }
-  var twYear = currentYear - 1911;
+    var twYear = currentYear - 1911;
 
-  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var timestampColIndex = headers.indexOf("時間戳記") + 1;
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var timestampColIndex = headers.indexOf("時間戳記") + 1;
 
-  var yearlyCount = 1;
-  if (timestampColIndex > 0 && row > 2) {
-    var allTimestamps = sheet
-      .getRange(2, timestampColIndex, row - 2, 1)
-      .getValues();
-    for (var i = allTimestamps.length - 1; i >= 0; i--) {
-      if (allTimestamps[i][0]) {
-        var checkStr = allTimestamps[i][0].toString();
-        var checkYear = currentYear;
-        var parts = checkStr.split(" ")[0].split("/");
-        if (parts.length === 3) {
-          checkYear = parseInt(parts[0], 10);
-        }
-        if (checkYear === currentYear) {
-          yearlyCount++;
+    var yearlyCount = 1;
+    if (timestampColIndex > 0 && row > 2) {
+      var allTimestamps = sheet
+        .getRange(2, timestampColIndex, row - 2, 1)
+        .getValues();
+      for (var i = allTimestamps.length - 1; i >= 0; i--) {
+        if (allTimestamps[i][0]) {
+          var checkStr = allTimestamps[i][0].toString();
+          var checkYear = currentYear;
+          var parts = checkStr.split(" ")[0].split("/");
+          if (parts.length === 3) {
+            checkYear = parseInt(parts[0], 10);
+          }
+          if (checkYear === currentYear) {
+            yearlyCount++;
+          }
         }
       }
     }
-  }
 
-  var formattedNum = ("000" + yearlyCount).slice(-3);
-  var formattedSeq = twYear.toString() + formattedNum;
+    var formattedNum = ("000" + yearlyCount).slice(-3);
+    formattedSeq = twYear.toString() + formattedNum;
+  } finally {
+    lock.releaseLock();
+  }
 
   // ==========================================
   // 5. 設定您的雲端資料夾 ID
@@ -183,7 +191,10 @@ function onFormSubmitTrigger(e) {
         var eapHeaders = eapSheet
           .getRange(1, 1, 1, eapSheet.getLastColumn())
           .getValues()[0];
-        var colPhone = eapHeaders.indexOf("手機");
+        var colPhone =
+          eapHeaders.indexOf("手機") !== -1
+            ? eapHeaders.indexOf("手機")
+            : eapHeaders.indexOf("電話");
         var colNcl = eapHeaders.indexOf("個案");
         var colFirm = eapHeaders.indexOf("地點");
 
@@ -874,7 +885,10 @@ function updateYearlyChecklist(phone, twYear) {
     .getRange(1, 1, 1, targetSheet.getLastColumn())
     .getValues()[0];
   var colDone = headers.indexOf("已完成");
-  var colPhone = headers.indexOf("手機");
+  var colPhone =
+    headers.indexOf("手機") !== -1
+      ? headers.indexOf("手機")
+      : headers.indexOf("電話");
   var colFilled = headers.indexOf("表格已填");
 
   if (colDone === -1 || colPhone === -1 || colFilled === -1) {
@@ -934,53 +948,85 @@ function updateCaseNameInEapSheet(phone, fullName, twYear) {
 
     var sheetName = twYear + "年";
     var targetSheet = targetSS.getSheetByName(sheetName);
-    if (!targetSheet) return;
+    if (!targetSheet) {
+      Logger.log("[updateCase] 找不到工作表：" + sheetName);
+      return;
+    }
 
     var lastRow = targetSheet.getLastRow();
-    if (lastRow < 2) return;
+    if (lastRow < 2) {
+      Logger.log("[updateCase] 工作表無資料");
+      return;
+    }
 
     var headers = targetSheet
       .getRange(1, 1, 1, targetSheet.getLastColumn())
       .getValues()[0];
 
-    var colPhone = headers.indexOf("手機");
+    var colPhone =
+      headers.indexOf("手機") !== -1
+        ? headers.indexOf("手機")
+        : headers.indexOf("電話");
     var colCase = headers.indexOf("個案");
 
-    if (colPhone === -1 || colCase === -1) return;
+    Logger.log("[updateCase] colPhone=" + colPhone + " colCase=" + colCase);
+
+    if (colPhone === -1 || colCase === -1) {
+      Logger.log(
+        "[updateCase] 找不到必要欄位，headers=" + JSON.stringify(headers),
+      );
+      return;
+    }
 
     var maxCol = Math.max(colPhone, colCase) + 1;
     var data = targetSheet.getRange(2, 1, lastRow - 1, maxCol).getValues();
     var cleanTargetPhone = phone.toString().replace(/['\D]/g, "");
 
+    Logger.log(
+      "[updateCase] 搜尋手機=" +
+        cleanTargetPhone +
+        " 全名=" +
+        fullName +
+        " 年度=" +
+        twYear,
+    );
+
     for (var i = data.length - 1; i >= 0; i--) {
       var rowPhone = data[i][colPhone].toString().replace(/['\D]/g, "");
+
+      // 每筆都印出來比對
+      Logger.log("[updateCase] 第" + (i + 2) + "列 手機=" + rowPhone);
+
       if (rowPhone !== cleanTargetPhone) continue;
 
       var original = data[i][colCase].toString().trim();
+      Logger.log("[updateCase] 找到！原始個案欄=" + original);
 
-      // 拆出 NCL 前綴（有就保留，沒有就空字串）
       var hasNcl = original.indexOf("NCL") !== -1;
       var prefix = hasNcl ? "NCL" : "";
-
-      // 判斷原始值是否包含「先生」或「小姐」
       var hasSir = original.indexOf("先生") !== -1;
       var hasMiss = original.indexOf("小姐") !== -1;
 
-      // 如果根本沒有稱呼，不需要處理，直接跳出
-      if (!hasSir && !hasMiss) break;
+      if (!hasSir && !hasMiss) {
+        Logger.log("[updateCase] 無稱呼，略過不處理");
+        break;
+      }
 
       var suffix = hasSir ? "先生" : "小姐";
-
-      // 組出新值：NCL（若有）+ 全名 + 稱呼
       var newValue = prefix + fullName + suffix;
 
-      // 如果跟現有值一樣就不寫入（避免觸發試算表重算）
-      if (newValue === original) break;
+      Logger.log("[updateCase] 原值=" + original + " 新值=" + newValue);
+
+      if (newValue === original) {
+        Logger.log("[updateCase] 新舊相同，不寫入");
+        break;
+      }
 
       targetSheet.getRange(i + 2, colCase + 1).setValue(newValue);
+      Logger.log("[updateCase] 已寫入第" + (i + 2) + "列");
       break;
     }
   } catch (err) {
-    // 防錯：不讓這個功能的失敗影響主流程
+    Logger.log("[updateCase] 發生錯誤：" + err.message);
   }
 }
