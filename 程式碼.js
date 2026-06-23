@@ -453,16 +453,8 @@ function sendDailyErrorSummaryEmail() {
     var time = recordData[i][6];
 
     // 1. 處理【諮商時間】的整形手術
-    var formattedTime = "";
-    if (time instanceof Date) {
-      formattedTime = Utilities.formatDate(
-        time,
-        Session.getScriptTimeZone(),
-        "yyyy/MM/dd HH:mm",
-      );
-    } else {
-      formattedTime = time ? time.toString() : "未提供";
-    }
+    var formattedTime =
+      time && time.toString().trim() ? time.toString().trim() : "未提供";
 
     // 2. 處理【系統製作時間】的整形手術
     var formattedExecTime = "";
@@ -487,7 +479,7 @@ function sendDailyErrorSummaryEmail() {
           " | 手機：" +
           phone +
           " | 來談時間：" +
-          time,
+          formattedExecTime,
       );
     } else if (status === "失敗") {
       failureList.push(
