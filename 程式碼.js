@@ -555,7 +555,7 @@ function sendDailyErrorSummaryEmail() {
           " | 手機：" +
           phone +
           " | 來談時間：" +
-          formattedExecTime,
+          formattedTime,
       );
     } else if (status === "失敗") {
       failureList.push(
@@ -633,6 +633,13 @@ function batchSearchAndGenerateWord() {
   var searchPhones = searchSheet.getRange(2, 1, lastRow - 1, 1).getValues();
   var sheets = ss.getSheets();
 
+  var sheetDataCache = {};
+  for (var k = 0; k < sheets.length; k++) {
+    var sName = sheets[k].getName();
+    if (sName === "系統錯誤紀錄" || sName === "批量製作資料") continue;
+    sheetDataCache[sName] = sheets[k].getDataRange().getValues();
+  }
+
   for (var s = 0; s < searchPhones.length; s++) {
     var rawSearchPhone = searchPhones[s][0].toString().trim();
     if (!rawSearchPhone) continue;
@@ -660,16 +667,15 @@ function batchSearchAndGenerateWord() {
       var sheetLastRow = currentSheet.getLastRow();
       if (sheetLastRow < 2) continue;
 
-      var headers = currentSheet
-        .getRange(1, 1, 1, currentSheet.getLastColumn())
-        .getValues()[0];
+      var cachedData = sheetDataCache[currentSheetName];
+      var headers = cachedData[0];
       var phoneColIndex = headers.indexOf("聯絡電話(手機)") + 1;
 
       if (phoneColIndex === 0) continue;
 
-      var allSheetPhones = currentSheet
-        .getRange(2, phoneColIndex, sheetLastRow - 1, 1)
-        .getValues();
+      var allSheetPhones = cachedData.slice(1).map(function (row) {
+        return [row[phoneColIndex - 1]];
+      });
 
       for (var r = allSheetPhones.length - 1; r >= 0; r--) {
         var sheetPhoneStr = allSheetPhones[r][0]
@@ -800,8 +806,10 @@ function createMockEvent(sheet, row, headers) {
           namedValues[headerName] = [rowValues[i]];
         }
       } else {
-        if (rowValues[i] instanceof Date && !isNaN(rowValues[i].getTime())) {
-          namedValues[headerName] = [rowValues[i].toISOString()];
+        if (rowValues[i] instanceof Date) {
+          namedValues[headerName] = isNaN(rowValues[i].getTime())
+            ? [""]
+            : [rowValues[i]];
         } else {
           namedValues[headerName] = [
             rowValues[i] !== null && rowValues[i] !== undefined
