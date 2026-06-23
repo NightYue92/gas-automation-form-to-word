@@ -799,11 +799,15 @@ function createMockEvent(sheet, row, headers) {
           namedValues[headerName] = [rowValues[i]];
         }
       } else {
-        namedValues[headerName] = [
-          rowValues[i] !== null && rowValues[i] !== undefined
-            ? rowValues[i].toString()
-            : "",
-        ];
+        if (rowValues[i] instanceof Date && !isNaN(rowValues[i].getTime())) {
+          namedValues[headerName] = [rowValues[i].toISOString()];
+        } else {
+          namedValues[headerName] = [
+            rowValues[i] !== null && rowValues[i] !== undefined
+              ? rowValues[i].toString()
+              : "",
+          ];
+        }
       }
     }
   }
