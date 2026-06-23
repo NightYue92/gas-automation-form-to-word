@@ -79,7 +79,6 @@ function onFormSubmitTrigger(e) {
   // (C) 手機號碼格式化為 09XX-XXX-XXX
   var formattedPhone = "格式錯誤";
   if (phone) {
-    // 🔧 修正後：用 String() 強制轉型，並把所有單引號 ' 與非數字全拔光
     var cleanPhone = String(phone).replace(/['\D]/g, "");
     if (cleanPhone.length === 10 && cleanPhone.indexOf("09") === 0) {
       formattedPhone =
@@ -490,7 +489,7 @@ function onFormSubmitTrigger(e) {
   }
 
   updateYearlyChecklist(formattedPhone, twYear);
-  updateCaseNameInEapSheet(formattedPhone, name, twYear);
+  updateCaseNameInEapSheet(formattedPhone, name, twYear, gender);
 
   logStatus(
     cleanCompanyName,
@@ -502,7 +501,6 @@ function onFormSubmitTrigger(e) {
   );
 }
 
-// 【修正調整】擴充輔助功能，讓它能安全接收 6 個參數、加入絕對防呆，沒傳入手機和時間時自動用空字串代替，不會卡死
 function logStatus(company, name, status, msg, phone, time) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var errorSheet = ss.getSheetByName("系統錯誤紀錄");
@@ -940,7 +938,7 @@ function updateYearlyChecklist(phone, twYear) {
 // =========================================================================
 // 完成製作後，將 EAP 總表的「個案」欄補全為全名+稱呼
 // =========================================================================
-function updateCaseNameInEapSheet(phone, fullName, twYear) {
+function updateCaseNameInEapSheet(phone, fullName, twYear, gender) {
   try {
     var targetSS = SpreadsheetApp.openById(
       PropertiesService.getScriptProperties().getProperty("EAP_SHEET_ID"),
@@ -1007,8 +1005,19 @@ function updateCaseNameInEapSheet(phone, fullName, twYear) {
       var hasSir = original.indexOf("先生") !== -1;
       var hasMiss = original.indexOf("小姐") !== -1;
 
+      // 無稱呼時：若有 NCL 則依性別補上，否則略過
       if (!hasSir && !hasMiss) {
-        Logger.log("[updateCase] 無稱呼，略過不處理");
+        if (hasNcl) {
+          var suffix = gender === "男" ? "先生" : "小姐";
+          var newValue = prefix + fullName + suffix;
+          Logger.log("[updateCase] NCL無稱呼，依性別補上：" + newValue);
+          if (newValue !== original) {
+            targetSheet.getRange(i + 2, colCase + 1).setValue(newValue);
+            Logger.log("[updateCase] 已寫入第" + (i + 2) + "列");
+          }
+        } else {
+          Logger.log("[updateCase] 無稱呼且無NCL，略過不處理");
+        }
         break;
       }
 
