@@ -479,6 +479,7 @@ function onFormSubmitTrigger(e) {
   }
 
   updateYearlyChecklist(formattedPhone, twYear);
+  updateCaseNameInEapSheet(formattedPhone, name, twYear);
 
   logStatus(
     cleanCompanyName,
@@ -911,5 +912,67 @@ function updateYearlyChecklist(phone, twYear) {
         sheetName +
         "】工作表中找不到手機相符且欄A為「未勾選(false)」的登記紀錄，無法自動註記，請人工核對。",
     );
+  }
+}
+
+// =========================================================================
+// 完成製作後，將 EAP 總表的「個案」欄補全為全名+稱呼
+// =========================================================================
+function updateCaseNameInEapSheet(phone, fullName, twYear) {
+  try {
+    var targetSS = SpreadsheetApp.openById(
+      PropertiesService.getScriptProperties().getProperty("EAP_SHEET_ID"),
+    );
+
+    var sheetName = twYear + "年";
+    var targetSheet = targetSS.getSheetByName(sheetName);
+    if (!targetSheet) return;
+
+    var lastRow = targetSheet.getLastRow();
+    if (lastRow < 2) return;
+
+    var headers = targetSheet
+      .getRange(1, 1, 1, targetSheet.getLastColumn())
+      .getValues()[0];
+
+    var colPhone = headers.indexOf("手機");
+    var colCase = headers.indexOf("個案");
+
+    if (colPhone === -1 || colCase === -1) return;
+
+    var maxCol = Math.max(colPhone, colCase) + 1;
+    var data = targetSheet.getRange(2, 1, lastRow - 1, maxCol).getValues();
+    var cleanTargetPhone = phone.toString().replace(/['\D]/g, "");
+
+    for (var i = data.length - 1; i >= 0; i--) {
+      var rowPhone = data[i][colPhone].toString().replace(/['\D]/g, "");
+      if (rowPhone !== cleanTargetPhone) continue;
+
+      var original = data[i][colCase].toString().trim();
+
+      // 拆出 NCL 前綴（有就保留，沒有就空字串）
+      var hasNcl = original.indexOf("NCL") !== -1;
+      var prefix = hasNcl ? "NCL" : "";
+
+      // 判斷原始值是否包含「先生」或「小姐」
+      var hasSir = original.indexOf("先生") !== -1;
+      var hasMiss = original.indexOf("小姐") !== -1;
+
+      // 如果根本沒有稱呼，不需要處理，直接跳出
+      if (!hasSir && !hasMiss) break;
+
+      var suffix = hasSir ? "先生" : "小姐";
+
+      // 組出新值：NCL（若有）+ 全名 + 稱呼
+      var newValue = prefix + fullName + suffix;
+
+      // 如果跟現有值一樣就不寫入（避免觸發試算表重算）
+      if (newValue === original) break;
+
+      targetSheet.getRange(i + 2, colCase + 1).setValue(newValue);
+      break;
+    }
+  } catch (err) {
+    // 防錯：不讓這個功能的失敗影響主流程
   }
 }
