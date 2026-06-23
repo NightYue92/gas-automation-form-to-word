@@ -206,7 +206,68 @@ function onFormSubmitTrigger(e) {
     // 防錯機制：若新表讀取失敗，維持不加字，不讓主自動化流程崩潰
   }
 
-  // 🔧 修正後的新命名邏輯：若有 NCL 會變 (NCL王大明)，若有諮商所會直接黏在檔名最後面
+  // 依諮商日期建立子資料夾
+  var finalTargetFolder = targetFolder; // 預設：直接放在目標資料夾
+  var folderCreationWarning = false;
+
+  // 嘗試從 formattedConsultTime 解析日期，格式為 "m/d(星期)HH:mm"
+  var consultDateLabel = "";
+  if (
+    formattedConsultTime &&
+    formattedConsultTime !== "未提供時間" &&
+    consultTime
+  ) {
+    try {
+      var cDateForFolder =
+        consultTime instanceof Date ? consultTime : new Date(consultTime);
+      if (!isNaN(cDateForFolder.getTime())) {
+        // 取得 "m/d" 作為資料夾名稱（例如 "6/23"）
+        consultDateLabel =
+          cDateForFolder.getMonth() + 1 + "/" + cDateForFolder.getDate();
+      }
+    } catch (err) {
+      consultDateLabel = "";
+    }
+  }
+
+  if (consultDateLabel) {
+    // 在目標資料夾中尋找是否已存在同名子資料夾
+    var subFolders = targetFolder.getFoldersByName(consultDateLabel);
+    if (subFolders.hasNext()) {
+      finalTargetFolder = subFolders.next(); // 已存在，直接使用
+    } else {
+      finalTargetFolder = targetFolder.createFolder(consultDateLabel); // 不存在，新建立
+    }
+  } else {
+    // 讀取不到諮商日期，維持放在原目標資料夾，並寄信通知
+    folderCreationWarning = true;
+    var alertEmail =
+      PropertiesService.getScriptProperties().getProperty("ALERT_EMAIL");
+    if (alertEmail) {
+      MailApp.sendEmail(
+        alertEmail,
+        "【自動化系統通知】個案諮商表格無法歸入日期資料夾",
+        "您好：\n\n系統在製作以下個案的諮商表格時，無法讀取諮商日期，檔案已直接存放於目標根資料夾，請人工確認歸檔位置。\n\n" +
+          "━━━━━━━━━━━━━━━━━━━━━━\n" +
+          "• 企業名稱：" +
+          cleanCompanyName +
+          "\n" +
+          "• 個案姓名：" +
+          name +
+          "\n" +
+          "• 手機號碼：" +
+          formattedPhone +
+          "\n" +
+          "• 諮商時間欄位原始值：" +
+          (consultTime || "（空白）") +
+          "\n" +
+          "━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+          "本信件由系統自動發送。",
+      );
+    }
+  }
+
+  // 若有 NCL 會變 (NCL王大明)，若有諮商所會直接黏在檔名最後面
   var newFileName =
     formattedSeq +
     cleanCompanyName +
@@ -215,7 +276,7 @@ function onFormSubmitTrigger(e) {
     name +
     ")" +
     firmText;
-  var newFile = templateFile.makeCopy(newFileName, targetFolder);
+  var newFile = templateFile.makeCopy(newFileName, finalTargetFolder);
   var doc = DocumentApp.openById(newFile.getId());
   var body = doc.getBody();
 
