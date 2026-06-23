@@ -165,7 +165,7 @@ function onFormSubmitTrigger(e) {
   var templateFile = files.next();
 
   // ==========================================
-  // 7. 【智慧連動命名】從 EAP聯絡 總表讀取 欄C(NCL) 與 欄F(諮商所) 資訊
+  // 7. 從 EAP聯絡 總表讀取NCL與諮商所資訊
   // ==========================================
   var nclText = ""; // 預設無 NCL 字眼
   var firmText = ""; // 預設無諮商所後綴
@@ -180,30 +180,44 @@ function onFormSubmitTrigger(e) {
     if (eapSheet) {
       var eapLastRow = eapSheet.getLastRow();
       if (eapLastRow >= 2) {
-        // 抓取到 欄F (第6欄) 即可
-        var eapData = eapSheet.getRange(2, 1, eapLastRow - 1, 6).getValues();
+        var eapHeaders = eapSheet
+          .getRange(1, 1, 1, eapSheet.getLastColumn())
+          .getValues()[0];
+        var colPhone = eapHeaders.indexOf("手機");
+        var colNcl = eapHeaders.indexOf("個案");
+        var colFirm = eapHeaders.indexOf("地點");
+
+        if (colPhone === -1 || colNcl === -1 || colFirm === -1) {
+          throw new Error(
+            "EAP總表找不到必要欄位（手機／個案／地點），請確認標題列",
+          );
+        }
+
+        var maxCol = Math.max(colPhone, colNcl, colFirm) + 1;
+        var eapData = eapSheet
+          .getRange(2, 1, eapLastRow - 1, maxCol)
+          .getValues();
         var cleanTargetPhone = String(phone).replace(/['\D]/g, "");
 
-        // 由下往上找個案最新登記的資料（純抓命名資訊，不限制核取方塊狀態）
         for (var e = eapData.length - 1; e >= 0; e--) {
-          var eapPhoneStr = eapData[e][3].toString().replace(/['\D]/g, ""); // 欄D
+          var eapPhoneStr = eapData[e][colPhone]
+            .toString()
+            .replace(/['\D]/g, "");
 
           if (eapPhoneStr === cleanTargetPhone) {
-            // (1) 偵測該筆 欄C (索引2) 的資料中是否含有「NCL」文字
-            if (eapData[e][2].toString().indexOf("NCL") !== -1) {
+            if (eapData[e][colNcl].toString().indexOf("NCL") !== -1) {
               nclText = "NCL";
             }
-            // (2) 偵測該筆 欄F (索引5) 是否有資料（諮商所名稱）
-            if (eapData[e][5]) {
-              firmText = eapData[e][5].toString().trim();
+            if (eapData[e][colFirm]) {
+              firmText = eapData[e][colFirm].toString().trim();
             }
-            break; // 抓到最新的一筆資訊後就立刻停下
+            break;
           }
         }
       }
     }
   } catch (err) {
-    // 防錯機制：若新表讀取失敗，維持不加字，不讓主自動化流程崩潰
+    // 防錯機制：維持不加字，不讓主流程崩潰
   }
 
   // 依諮商日期建立子資料夾
@@ -842,29 +856,47 @@ function updateYearlyChecklist(phone, twYear) {
     return;
   }
 
-  // 智慧優化：一口氣抓取 欄A 到 欄J 的所有資料 (共10欄) 以利複合條件比對
-  var dataRange = targetSheet.getRange(2, 1, lastRow - 1, 10).getValues();
+  // 先讀標題列，動態找欄位索引
+  var headers = targetSheet
+    .getRange(1, 1, 1, targetSheet.getLastColumn())
+    .getValues()[0];
+  var colDone = headers.indexOf("已完成");
+  var colPhone = headers.indexOf("手機");
+  var colFilled = headers.indexOf("表格已填");
+
+  if (colDone === -1 || colPhone === -1 || colFilled === -1) {
+    MailApp.sendEmail(
+      myEmail,
+      "【自動化系統警告】EAP總表找不到必要欄位",
+      "在【" +
+        sheetName +
+        "】找不到「已完成」、「手機」或「表格已填」欄位，請確認標題列。",
+    );
+    return;
+  }
+
+  var maxCol = Math.max(colDone, colPhone, colFilled) + 1;
+  var dataRange = targetSheet.getRange(2, 1, lastRow - 1, maxCol).getValues();
   var cleanTargetPhone = phone.toString().replace(/['\D]/g, "");
   var foundAndMarked = false;
 
-  // 【逆向搜尋】由下往上搜尋最新登記的資料
   for (var i = dataRange.length - 1; i >= 0; i--) {
-    var currentPhoneStr = dataRange[i][3].toString().replace(/['\D]/g, "");
-    var isCheckboxTrue = dataRange[i][0];
+    var currentPhoneStr = dataRange[i][colPhone]
+      .toString()
+      .replace(/['\D]/g, "");
+    var isCheckboxTrue = dataRange[i][colDone];
 
-    // 條件一：手機號碼必須相符
     if (currentPhoneStr === cleanTargetPhone) {
-      // ✨ 條件二：檢查欄A狀態是否為 false (未勾選)
       if (isCheckboxTrue === false) {
         var targetRow = i + 2;
-        targetSheet.getRange(targetRow, 10).setValue("V(系統)");
+        targetSheet.getRange(targetRow, colFilled + 1).setValue("V(系統)");
         foundAndMarked = true;
         break;
       }
     }
   }
 
-  // 若繞完整張表，完全沒有搜尋到手機相符且欄A為false的登記資料，寄信通知您
+  // 若繞完整張表，完全沒有搜尋到手機相符且欄A為false的登記資料，寄信通知
   if (!foundAndMarked) {
     MailApp.sendEmail(
       myEmail,
