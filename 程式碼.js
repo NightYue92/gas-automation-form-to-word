@@ -848,6 +848,7 @@ function onOpen() {
   ui.createMenu("🛠️ 批量製作資料")
     .addItem("有資料才製作", "batchSearchAndGenerateWord")
     .addItem("全部製作（無資料產空白版）", "batchSearchAndGenerateAllWord")
+    .addItem("純空白表格", "showCompanySelector")
     .addToUi();
 }
 
@@ -1646,13 +1647,101 @@ function _getOrCreateSubFolder(parentFolder, folderName) {
 }
 
 function _replaceAllPlaceholdersWithBlank(body) {
-  // 含底線的佔位符（核取方塊）→ □
+  // (1) 「其他」類核取方塊：保留文字
+  body.replaceText("\\{\\{教育_其他\\}\\}", "□ 其他：");
+  body.replaceText("\\{\\{婚姻_其他\\}\\}", "□ 其他：");
+  body.replaceText("\\{\\{問_其他\\}\\}", "□ 其他問題：");
+  body.replaceText("\\{\\{來源_其它\\}\\}", "□ 其它：");
+
+  // (2) 緊急聯絡人欄位：保留手寫空間
+  body.replaceText("\\{\\{緊急聯絡人姓名\\}\\}", "　　　　　");
+  body.replaceText("\\{\\{緊急聯絡人電話\\}\\}", "　　　　　");
+  body.replaceText("\\{\\{緊急聯絡人關係\\}\\}", "　　　");
+
+  // (3) 剩餘含底線的佔位符（一般核取方塊）→ □
   body.replaceText("\\{\\{[^}]*_[^}]*\\}\\}", "□");
-  // 不含底線的佔位符（文字欄）→ 空字串
+
+  // (4) 剩餘不含底線的佔位符（文字欄）→ 空字串
   body.replaceText("\\{\\{[^}_]*\\}\\}", "");
 }
 
 function _remind(email, subject, message) {
   if (email) MailApp.sendEmail(email, subject, message);
   Logger.log(subject + "\n" + message);
+}
+
+function showCompanySelector() {
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var templateFolderId = scriptProperties.getProperty("TEMPLATE_FOLDER_ID");
+
+  // 從範本資料夾讀取所有企業名稱
+  var templateFolder = DriveApp.getFolderById(templateFolderId);
+  var files = templateFolder.getFiles();
+  var companyNames = [];
+  while (files.hasNext()) {
+    var fileName = files
+      .next()
+      .getName()
+      .replace(/^\d+\.\s*/, "")
+      .trim();
+    companyNames.push(fileName);
+  }
+  companyNames.sort();
+
+  // 建立下拉選單 HTML
+  var html = HtmlService.createHtmlOutput(
+    "<style>body{font-family:Arial,sans-serif;padding:20px;}" +
+      "select{width:100%;padding:8px;margin:10px 0;font-size:14px;}" +
+      "button{padding:10px 20px;font-size:14px;cursor:pointer;background:#4CAF50;color:white;border:none;border-radius:4px;}" +
+      "</style>" +
+      "<p>請選擇企業：</p>" +
+      '<select id="company">' +
+      companyNames
+        .map(function (n) {
+          return '<option value="' + n + '">' + n + "</option>";
+        })
+        .join("") +
+      "</select><br>" +
+      '<button onclick="run()">製作空白表格</button>' +
+      "<script>" +
+      "function run(){" +
+      '  var val = document.getElementById("company").value;' +
+      "  google.script.run.withSuccessHandler(function(msg){" +
+      "    document.body.innerHTML = msg;" +
+      "  }).withFailureHandler(function(err){" +
+      '    document.body.innerHTML = "❌ 錯誤：" + err.message;' +
+      "  }).generateBlankTemplateByCompany(val);" +
+      "}" +
+      "</script>",
+  )
+    .setWidth(350)
+    .setHeight(160);
+
+  SpreadsheetApp.getUi().showModalDialog(html, "製作空白表格");
+}
+
+function generateBlankTemplateByCompany(companyName) {
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var templateFolderId = scriptProperties.getProperty("TEMPLATE_FOLDER_ID");
+  var targetFolderId = scriptProperties.getProperty("TARGET_FOLDER_ID");
+
+  var templateFolder = DriveApp.getFolderById(templateFolderId);
+  var targetFolder = DriveApp.getFolderById(targetFolderId);
+
+  var templateFile = _findTemplateByCompany(templateFolder, companyName);
+  if (!templateFile) {
+    return "❌ 找不到【" + companyName + "】的範本，請確認範本資料夾。";
+  }
+
+  var newFileName = companyName + "諮商表格(空白)";
+
+  try {
+    var newFile = templateFile.makeCopy(newFileName, targetFolder);
+    var doc = DocumentApp.openById(newFile.getId());
+    _replaceAllPlaceholdersWithBlank(doc.getBody());
+    doc.saveAndClose();
+    return "✅ 已成功製作：" + newFileName;
+  } catch (err) {
+    return "❌ 製作失敗：" + err.message;
+  }
 }
