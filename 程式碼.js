@@ -812,7 +812,11 @@ function createMockEvent(sheet, row, headers) {
               " 上午 00:00:00",
           ];
         } else {
-          namedValues[headerName] = [rowValues[i]];
+          namedValues[headerName] = [
+            rowValues[i].toISOString
+              ? rowValues[i].toISOString()
+              : rowValues[i],
+          ];
         }
       } else {
         if (rowValues[i] instanceof Date) {
@@ -842,7 +846,8 @@ function createMockEvent(sheet, row, headers) {
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu("🛠️ 批量製作資料")
-    .addItem("點選即開始製作", "batchSearchAndGenerateWord")
+    .addItem("有資料才製作", "batchSearchAndGenerateWord")
+    .addItem("全部製作（無資料產空白版）", "batchSearchAndGenerateAllWord")
     .addToUi();
 }
 
@@ -1038,4 +1043,616 @@ function updateCaseNameInEapSheet(phone, fullName, twYear, gender) {
   } catch (err) {
     Logger.log("[updateCase] 發生錯誤：" + err.message);
   }
+}
+
+// =========================================================================
+// 新功能 A：每天 17:00 自動為「明日有諮商預約」但尚未填表的個案，產生一份空白 Word 諮商表格
+// =========================================================================
+
+/**
+ * 主函式：由時間觸發器在每日 17:00 呼叫
+ * 設定方式：Apps Script > 觸發器 > 新增觸發器
+ *   函式：sendDailyUpcomingCaseReminder
+ *   事件來源：時間驅動 > 日計時器 > 下午 5 點到 6 點
+ *
+ * 日期邏輯：
+ *   - 平日（一～四）→ 製作「明天」1 天
+ *   - 週五           → 製作「明天(六)、後天(日)、大後天(一)」共 3 天
+ *   - 週六、週日     → 不執行
+ *
+ * 國定假日說明：
+ *   國定假日請使用批量製作選單手動處理，不在此自動觸發版中判斷。
+ */
+function sendDailyUpcomingCaseReminder() {
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var eapSheetId = scriptProperties.getProperty("EAP_SHEET_ID");
+  var templateFolderId = scriptProperties.getProperty("TEMPLATE_FOLDER_ID");
+  var targetFolderId = scriptProperties.getProperty("TARGET_FOLDER_ID");
+  var alertEmail = scriptProperties.getProperty("ALERT_EMAIL");
+
+  // ── 0. 決定要製作哪幾天 ──────────────────────────────────────────────
+  var today = new Date();
+  var todayDow = today.getDay(); // 0=日,1=一,...,6=六
+
+  if (todayDow === 0 || todayDow === 6) return; // 週末不執行
+
+  var targetDates = [];
+  if (todayDow === 5) {
+    // 週五：製作明天(六)、後天(日)、大後天(一)
+    for (var offset = 1; offset <= 3; offset++) {
+      var d = new Date(today);
+      d.setDate(today.getDate() + offset);
+      targetDates.push(d);
+    }
+  } else {
+    // 週一～週四：只製作明天
+    var d = new Date(today);
+    d.setDate(today.getDate() + 1);
+    targetDates.push(d);
+  }
+
+  // ── 1. 開啟 EAP 總表 ─────────────────────────────────────────────────
+  var eapSS = SpreadsheetApp.openById(eapSheetId);
+  var twYear = today.getFullYear() - 1911;
+  var sheetName = twYear + "年";
+  var eapSheet = eapSS.getSheetByName(sheetName);
+
+  if (!eapSheet) {
+    _remind(
+      alertEmail,
+      "【自動化系統警告】找不到年度工作表",
+      "sendDailyUpcomingCaseReminder 找不到【" +
+        sheetName +
+        "】，請確認工作表名稱。",
+    );
+    return;
+  }
+
+  var lastRow = eapSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // ── 2. 動態定位欄位 ──────────────────────────────────────────────────
+  var headers = eapSheet
+    .getRange(1, 1, 1, eapSheet.getLastColumn())
+    .getValues()[0];
+
+  var colNextDate = _findCol(headers, "下次約的日期");
+  var colDone = _findCol(headers, "已完成");
+  var colFilled = _findCol(headers, "表格已填");
+  var colCompany = _findCol(headers, "公司");
+  var colCase = _findCol(headers, "個案");
+  var colFirm = _findCol(headers, "地點");
+
+  if (
+    colNextDate === -1 ||
+    colDone === -1 ||
+    colFilled === -1 ||
+    colCompany === -1
+  ) {
+    _remind(
+      alertEmail,
+      "【自動化系統警告】EAP總表缺少必要欄位",
+      "找不到：下次約的日期／已完成／表格已填／公司。請確認標題列。",
+    );
+    return;
+  }
+
+  var maxCol =
+    Math.max(
+      colNextDate,
+      colDone,
+      colFilled,
+      colCompany,
+      colCase !== -1 ? colCase : 0,
+      colFirm !== -1 ? colFirm : 0,
+    ) + 1;
+  var data = eapSheet.getRange(2, 1, lastRow - 1, maxCol).getValues();
+
+  // ── 3. 準備資料夾 ────────────────────────────────────────────────────
+  var templateFolder, targetFolder;
+  try {
+    templateFolder = DriveApp.getFolderById(templateFolderId);
+    targetFolder = DriveApp.getFolderById(targetFolderId);
+  } catch (err) {
+    _remind(
+      alertEmail,
+      "【自動化系統警告】資料夾 ID 錯誤或權限不足",
+      err.message,
+    );
+    return;
+  }
+
+  // ── 4. 逐日、逐列掃描製作 ────────────────────────────────────────────
+  var successList = [];
+  var failList = [];
+
+  for (var d = 0; d < targetDates.length; d++) {
+    var targetDate = targetDates[d];
+    var targetMonth = targetDate.getMonth() + 1;
+    var targetDay = targetDate.getDate();
+
+    for (var i = 0; i < data.length; i++) {
+      var row = data[i];
+
+      // (A) 日期符合
+      var rawNextDate = row[colNextDate]
+        ? row[colNextDate].toString().trim()
+        : "";
+      if (!rawNextDate || !_matchDate(rawNextDate, targetMonth, targetDay))
+        continue;
+
+      // (B) 已完成 = TRUE → 跳過
+      var isDone = row[colDone];
+      if (isDone === true || isDone === "TRUE" || isDone === "true") continue;
+
+      // (C) 表格已填含「V」或「給空白」→ 跳過
+      var filledVal = row[colFilled] ? row[colFilled].toString().trim() : "";
+      if (filledVal.indexOf("V") !== -1 || filledVal.indexOf("v") !== -1)
+        continue;
+      if (filledVal.indexOf("給空白") !== -1) continue;
+
+      // (D) 公司名稱
+      var rawCompany =
+        colCompany !== -1 ? row[colCompany].toString().trim() : "";
+      var companyName = rawCompany.replace(/親屬/g, "").trim();
+      if (!companyName) {
+        failList.push(
+          "第 " +
+            (i + 2) +
+            " 列（" +
+            targetMonth +
+            "/" +
+            targetDay +
+            "）：公司欄空白或僅含「親屬」",
+        );
+        continue;
+      }
+
+      // (E) 個案欄（完整格式，如「NCL王小姐」）
+      var caseRaw = colCase !== -1 ? row[colCase].toString().trim() : "";
+      var caseName = caseRaw || "未知個案";
+
+      // (F) 諮商所名稱
+      var firmText = colFirm !== -1 ? row[colFirm].toString().trim() : "";
+
+      // (G) 尋找範本
+      var templateFile = _findTemplateByCompany(templateFolder, companyName);
+      if (!templateFile) {
+        failList.push(caseName + "（" + companyName + "）：找不到對應範本");
+        continue;
+      }
+
+      // (H) 子資料夾（依諮商日期）
+      var dateLabel = targetMonth + "/" + targetDay;
+      var finalTargetFolder = _getOrCreateSubFolder(targetFolder, dateLabel);
+
+      // (I) 檔名
+      var newFileName =
+        twYear + companyName + "諮商表格(" + caseName + ")" + firmText + "-空";
+
+      // (J) 複製、空白代換、儲存
+      try {
+        var newFile = templateFile.makeCopy(newFileName, finalTargetFolder);
+        var doc = DocumentApp.openById(newFile.getId());
+        _replaceAllPlaceholdersWithBlank(doc.getBody());
+        doc.saveAndClose();
+
+        eapSheet.getRange(i + 2, colFilled + 1).setValue("給空白(系統)");
+        successList.push(
+          dateLabel +
+            " " +
+            caseName +
+            "（" +
+            companyName +
+            "）→ " +
+            newFileName,
+        );
+      } catch (err) {
+        failList.push(
+          caseName + "（" + companyName + "）：製作失敗 - " + err.message,
+        );
+      }
+    }
+  }
+
+  // ── 5. 通知信 ────────────────────────────────────────────────────────
+  if (successList.length === 0 && failList.length === 0) return;
+
+  var rangeLabel = targetDates
+    .map(function (dt) {
+      return dt.getMonth() + 1 + "/" + dt.getDate();
+    })
+    .join("、");
+
+  var emailBody =
+    "您好，以下是今日自動製作【" +
+    rangeLabel +
+    "】預約個案之空白表格結果：\n\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━\n" +
+    "✅ 成功製作（共 " +
+    successList.length +
+    " 筆）：\n" +
+    (successList.length > 0
+      ? successList
+          .map(function (s) {
+            return "• " + s;
+          })
+          .join("\n")
+      : "（無）") +
+    "\n\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━\n" +
+    "⚠️ 製作失敗或略過（共 " +
+    failList.length +
+    " 筆）：\n" +
+    (failList.length > 0
+      ? failList
+          .map(function (f) {
+            return "• " + f;
+          })
+          .join("\n")
+      : "（無）") +
+    "\n\n" +
+    "本信件由系統自動發送。";
+
+  if (alertEmail) {
+    MailApp.sendEmail(
+      alertEmail,
+      "【自動化系統】諮商空白表格製作完畢（" + rangeLabel + "）",
+      emailBody,
+    );
+  }
+}
+
+// =========================================================================
+// 新功能 B-1：批量製作 ─「有資料才製作」
+//   找到表單資料 → 產完整版（呼叫現有 onFormSubmitTrigger）
+//   找不到資料   → 跳過，B 欄顯示「❌ 查無資料」
+// 新功能 B-2：批量製作 ─「全部製作（無資料產空白版）」
+//   找到表單資料 → 產完整版（同 batchSearchAndGenerateWord）
+//   找不到資料   → 從 EAP 總表讀個案欄 + 地點欄，產空白版 + 回寫「給空白(系統)」
+// =========================================================================
+function batchSearchAndGenerateAllWord() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var searchSheet = ss.getSheetByName("批量製作資料");
+  if (!searchSheet) {
+    SpreadsheetApp.getUi().alert(
+      "系統找不到名為【批量製作資料】的工作表，請先建立分頁。",
+    );
+    return;
+  }
+
+  var lastRow = searchSheet.getLastRow();
+  if (lastRow < 2) {
+    SpreadsheetApp.getUi().alert("請先在 A 欄輸入想要查詢的手機號碼！");
+    return;
+  }
+
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var templateFolderId = scriptProperties.getProperty("TEMPLATE_FOLDER_ID");
+  var targetFolderId = scriptProperties.getProperty("TARGET_FOLDER_ID");
+  var eapSheetId = scriptProperties.getProperty("EAP_SHEET_ID");
+
+  var templateFolder = DriveApp.getFolderById(templateFolderId);
+  var targetFolder = DriveApp.getFolderById(targetFolderId);
+
+  var today = new Date();
+  var twYear = today.getFullYear() - 1911;
+
+  // ── 開啟 EAP 總表，備用（當表單找不到資料時使用）──────────────────
+  var eapSS = SpreadsheetApp.openById(eapSheetId);
+  var sheetName = twYear + "年";
+  var eapSheet = eapSS.getSheetByName(sheetName);
+
+  var eapHeaders,
+    colEapPhone,
+    colEapCase,
+    colEapFirm,
+    colEapFilled,
+    colEapCompany;
+  var eapData = [];
+  if (eapSheet && eapSheet.getLastRow() >= 2) {
+    eapHeaders = eapSheet
+      .getRange(1, 1, 1, eapSheet.getLastColumn())
+      .getValues()[0];
+    colEapPhone =
+      eapHeaders.indexOf("手機") !== -1
+        ? eapHeaders.indexOf("手機")
+        : eapHeaders.indexOf("電話");
+    colEapCase = _findCol(eapHeaders, "個案");
+    colEapFirm = _findCol(eapHeaders, "地點");
+    colEapFilled = _findCol(eapHeaders, "表格已填");
+    colEapCompany = _findCol(eapHeaders, "公司");
+
+    var maxEapCol =
+      Math.max(
+        colEapPhone !== -1 ? colEapPhone : 0,
+        colEapCase !== -1 ? colEapCase : 0,
+        colEapFirm !== -1 ? colEapFirm : 0,
+        colEapFilled !== -1 ? colEapFilled : 0,
+        colEapCompany !== -1 ? colEapCompany : 0,
+      ) + 1;
+    eapData = eapSheet
+      .getRange(2, 1, eapSheet.getLastRow() - 1, maxEapCol)
+      .getValues();
+  }
+
+  // ── 建立各表單工作表快取 ─────────────────────────────────────────────
+  var sheets = ss.getSheets();
+  var sheetDataCache = {};
+  for (var k = 0; k < sheets.length; k++) {
+    var sName = sheets[k].getName();
+    if (sName === "系統錯誤紀錄" || sName === "批量製作資料") continue;
+    sheetDataCache[sName] = sheets[k].getDataRange().getValues();
+  }
+
+  var searchPhones = searchSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+
+  for (var s = 0; s < searchPhones.length; s++) {
+    var rawSearchPhone = searchPhones[s][0].toString().trim();
+    if (!rawSearchPhone) continue;
+    var cleanSearchPhone = rawSearchPhone.replace(/['\D]/g, "");
+
+    var found = false;
+    var latestTimestamp = new Date(0);
+    var targetSheetToMake = null;
+    var targetRowToMake = 0;
+    var showTimeResult = "—";
+    var rowResult = "";
+
+    // ── 跨工作表找最新一筆表單資料（同原本 batchSearchAndGenerateWord）──
+    for (var k = 0; k < sheets.length; k++) {
+      var currentSheet = sheets[k];
+      var currentSheetName = currentSheet.getName();
+      if (
+        currentSheetName === "系統錯誤紀錄" ||
+        currentSheetName === "批量製作資料"
+      )
+        continue;
+
+      var cachedData = sheetDataCache[currentSheetName];
+      var hdr = cachedData[0];
+      var phoneColIndex = hdr.indexOf("聯絡電話(手機)") + 1;
+      if (phoneColIndex === 0) continue;
+
+      var allSheetPhones = cachedData.slice(1).map(function (r) {
+        return [r[phoneColIndex - 1]];
+      });
+
+      for (var r = allSheetPhones.length - 1; r >= 0; r--) {
+        var sheetPhoneStr = allSheetPhones[r][0]
+          .toString()
+          .replace(/['\D]/g, "");
+        if (sheetPhoneStr !== cleanSearchPhone) continue;
+
+        found = true;
+        var targetRow = r + 2;
+        var tsColIndex = hdr.indexOf("時間戳記") + 1;
+        var rowTimestamp =
+          tsColIndex > 0
+            ? new Date(currentSheet.getRange(targetRow, tsColIndex).getValue())
+            : new Date(0);
+
+        if (rowTimestamp > latestTimestamp) {
+          latestTimestamp = rowTimestamp;
+          targetSheetToMake = currentSheet;
+          targetRowToMake = targetRow;
+        }
+        break;
+      }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // 情況一：找到表單資料 → 產完整版（同 batchSearchAndGenerateWord）
+    // ════════════════════════════════════════════════════════════════════
+    if (found && targetSheetToMake !== null) {
+      var finalHeaders = targetSheetToMake
+        .getRange(1, 1, 1, targetSheetToMake.getLastColumn())
+        .getValues()[0];
+
+      // 諮商時間（寫入 D 欄）
+      var cachedHeaders = sheetDataCache[targetSheetToMake.getName()][0];
+      var cachedRows = sheetDataCache[targetSheetToMake.getName()];
+      var timeColInCache = cachedHeaders.indexOf("第一次諮商時間");
+      var rawConsultTime =
+        timeColInCache !== -1 && targetRowToMake - 1 < cachedRows.length
+          ? cachedRows[targetRowToMake - 1][timeColInCache] // targetRowToMake 是 1-based，陣列是 0-based
+          : "";
+      showTimeResult = "未提供時間";
+      if (rawConsultTime) {
+        var cDate = new Date(rawConsultTime);
+        if (!isNaN(cDate.getTime())) {
+          var weekdays = ["日", "一", "二", "三", "四", "五", "六"];
+          showTimeResult =
+            cDate.getMonth() +
+            1 +
+            "/" +
+            cDate.getDate() +
+            "(" +
+            weekdays[cDate.getDay()] +
+            ")" +
+            ("0" + cDate.getHours()).slice(-2) +
+            ":" +
+            ("0" + cDate.getMinutes()).slice(-2);
+        } else {
+          showTimeResult = rawConsultTime.toString();
+        }
+      }
+
+      try {
+        var mockEvent = createMockEvent(
+          targetSheetToMake,
+          targetRowToMake,
+          finalHeaders,
+        );
+        onFormSubmitTrigger(mockEvent);
+        var caseName = "";
+        var nameColIdx = finalHeaders.indexOf("姓名") + 1;
+        if (nameColIdx > 0)
+          caseName = targetSheetToMake
+            .getRange(targetRowToMake, nameColIdx)
+            .getValue();
+        rowResult =
+          "✅ 已製作：" +
+          targetSheetToMake.getName().replace(/^\d+\.\s*/, "") +
+          " " +
+          caseName;
+      } catch (err) {
+        rowResult = "⚠️ 找到資料但製作失敗：" + err.message;
+      }
+
+      searchSheet.getRange(s + 2, 2).setValue(rowResult);
+      searchSheet.getRange(s + 2, 3).setValue(new Date());
+      searchSheet.getRange(s + 2, 4).setValue(showTimeResult);
+      continue;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // 情況二：找不到表單資料 → 從 EAP 總表讀資料，產空白版
+    // ════════════════════════════════════════════════════════════════════
+    var caseName = "未知個案";
+    var firmText = "";
+    var companyName = "";
+    var eapRowIndex = -1;
+
+    if (eapSheet && colEapPhone !== -1) {
+      for (var e = eapData.length - 1; e >= 0; e--) {
+        var eapPhoneStr = eapData[e][colEapPhone]
+          .toString()
+          .replace(/['\D]/g, "");
+        if (eapPhoneStr !== cleanSearchPhone) continue;
+
+        if (colEapCase !== -1)
+          caseName = eapData[e][colEapCase].toString().trim() || "未知個案";
+        if (colEapFirm !== -1)
+          firmText = eapData[e][colEapFirm].toString().trim();
+        if (colEapCompany !== -1)
+          companyName = eapData[e][colEapCompany]
+            .toString()
+            .trim()
+            .replace(/親屬/g, "")
+            .trim();
+        eapRowIndex = e + 2;
+        break;
+      }
+    }
+
+    if (!companyName) {
+      rowResult = "❌ 查無資料（EAP總表亦無此手機號碼或公司欄空白）";
+      searchSheet.getRange(s + 2, 2).setValue(rowResult);
+      searchSheet.getRange(s + 2, 3).setValue(new Date());
+      continue;
+    }
+
+    var templateFile = _findTemplateByCompany(templateFolder, companyName);
+    if (!templateFile) {
+      rowResult = "❌ 查無表單資料，且找不到【" + companyName + "】對應範本";
+      searchSheet.getRange(s + 2, 2).setValue(rowResult);
+      searchSheet.getRange(s + 2, 3).setValue(new Date());
+      continue;
+    }
+
+    // 子資料夾依 EAP 總表「下次約的日期」命名
+    var colEapNextDate = _findCol(eapHeaders, "下次約的日期");
+    var rawEapNextDate =
+      colEapNextDate !== -1 && eapRowIndex !== -1
+        ? eapData[eapRowIndex - 2][colEapNextDate].toString().trim()
+        : "";
+    // 從原始字串擷取 m/d（容錯全形括號與空白）
+    var folderLabel = "";
+    if (rawEapNextDate) {
+      var normalized = rawEapNextDate
+        .replace(/　/g, " ")
+        .replace(/\s+/g, "")
+        .replace(/（/g, "(")
+        .replace(/）/g, ")");
+      var matchLabel = normalized.match(/^(\d{1,2})\/(\d{1,2})/);
+      if (matchLabel) folderLabel = matchLabel[1] + "/" + matchLabel[2];
+    }
+    // 若讀不到日期，fallback 用今日
+    if (!folderLabel)
+      folderLabel = today.getMonth() + 1 + "/" + today.getDate();
+    var finalTargetFolder = _getOrCreateSubFolder(targetFolder, folderLabel);
+
+    var newFileName =
+      twYear + companyName + "諮商表格(" + caseName + ")" + firmText + "-空";
+
+    try {
+      var newFile = templateFile.makeCopy(newFileName, finalTargetFolder);
+      var doc = DocumentApp.openById(newFile.getId());
+      _replaceAllPlaceholdersWithBlank(doc.getBody());
+      doc.saveAndClose();
+
+      if (eapSheet && eapRowIndex !== -1 && colEapFilled !== -1) {
+        eapSheet
+          .getRange(eapRowIndex, colEapFilled + 1)
+          .setValue("給空白(系統)");
+      }
+
+      rowResult = "✅ 已製作空白版：" + companyName + " " + caseName;
+    } catch (err) {
+      rowResult = "⚠️ 空白版製作失敗：" + err.message;
+    }
+
+    searchSheet.getRange(s + 2, 2).setValue(rowResult);
+    searchSheet.getRange(s + 2, 3).setValue(new Date());
+  }
+
+  SpreadsheetApp.getUi().alert("🎉 全部製作已執行完畢！");
+}
+
+// =========================================================================
+// 共用輔助函式
+// =========================================================================
+
+function _findCol(headers, name) {
+  return headers.indexOf(name);
+}
+
+function _matchDate(raw, targetMonth, targetDay) {
+  var normalized = raw
+    .replace(/　/g, " ")
+    .replace(/\s+/g, "")
+    .replace(/（/g, "(")
+    .replace(/）/g, ")");
+  var match = normalized.match(/^(\d{1,2})\/(\d{1,2})/);
+  if (!match) return false;
+  return (
+    parseInt(match[1], 10) === targetMonth &&
+    parseInt(match[2], 10) === targetDay
+  );
+}
+
+function _findTemplateByCompany(folder, companyName) {
+  var files = folder.getFiles();
+  while (files.hasNext()) {
+    var file = files.next();
+    var cleanFileName = file
+      .getName()
+      .replace(/^\d+\.\s*/, "")
+      .trim();
+    if (
+      cleanFileName.indexOf(companyName) !== -1 ||
+      companyName.indexOf(cleanFileName) !== -1
+    ) {
+      return file;
+    }
+  }
+  return null;
+}
+
+function _getOrCreateSubFolder(parentFolder, folderName) {
+  var sub = parentFolder.getFoldersByName(folderName);
+  return sub.hasNext() ? sub.next() : parentFolder.createFolder(folderName);
+}
+
+function _replaceAllPlaceholdersWithBlank(body) {
+  // 含底線的佔位符（核取方塊）→ □
+  body.replaceText("\\{\\{[^}]*_[^}]*\\}\\}", "□");
+  // 不含底線的佔位符（文字欄）→ 空字串
+  body.replaceText("\\{\\{[^}_]*\\}\\}", "");
+}
+
+function _remind(email, subject, message) {
+  if (email) MailApp.sendEmail(email, subject, message);
+  Logger.log(subject + "\n" + message);
 }
