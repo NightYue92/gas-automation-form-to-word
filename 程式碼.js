@@ -812,11 +812,28 @@ function createMockEvent(sheet, row, headers) {
               " 上午 00:00:00",
           ];
         } else {
-          namedValues[headerName] = [
-            rowValues[i].toISOString
-              ? rowValues[i].toISOString()
-              : rowValues[i],
-          ];
+          if (rowValues[i] instanceof Date && !isNaN(rowValues[i].getTime())) {
+            var d = rowValues[i];
+            // 輸出本地時間，讓 new Date(...) 能正確解析
+            namedValues[headerName] = [
+              d.getFullYear() +
+                "/" +
+                (d.getMonth() + 1) +
+                "/" +
+                d.getDate() +
+                " " +
+                ("0" + d.getHours()).slice(-2) +
+                ":" +
+                ("0" + d.getMinutes()).slice(-2) +
+                ":00",
+            ];
+          } else {
+            namedValues[headerName] = [
+              rowValues[i] !== null && rowValues[i] !== undefined
+                ? rowValues[i].toString()
+                : "",
+            ];
+          }
         }
       } else {
         if (rowValues[i] instanceof Date) {
