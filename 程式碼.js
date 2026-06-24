@@ -927,7 +927,37 @@ function updateYearlyChecklist(phone, twYear) {
     }
   }
 
-  // 若繞完整張表，完全沒有搜尋到手機相符且欄A為false的登記資料，寄信通知
+  // ── 第二輪：若找不到「已完成=FALSE」的資料，改找最新一筆含「給空白」且手機相符的資料 ──
+  if (!foundAndMarked) {
+    for (var i = dataRange.length - 1; i >= 0; i--) {
+      var currentPhoneStr = dataRange[i][colPhone]
+        .toString()
+        .replace(/['\D]/g, "");
+      var filledVal = dataRange[i][colFilled]
+        ? dataRange[i][colFilled].toString().trim()
+        : "";
+
+      if (
+        currentPhoneStr === cleanTargetPhone &&
+        filledVal.indexOf("給空白") !== -1
+      ) {
+        var targetRow = i + 2;
+        targetSheet.getRange(targetRow, colFilled + 1).setValue("已補交(系統)");
+        foundAndMarked = true;
+        Logger.log(
+          "[updateYearlyChecklist] 個案補交：手機=" +
+            phone +
+            " 第" +
+            targetRow +
+            "列 原表格已填=" +
+            filledVal,
+        );
+        break;
+      }
+    }
+  }
+
+  // 若兩輪都找不到，寄信通知
   if (!foundAndMarked) {
     MailApp.sendEmail(
       myEmail,
@@ -936,7 +966,7 @@ function updateYearlyChecklist(phone, twYear) {
         phone +
         "】已成功製作 Word 檔，但在新表的【" +
         sheetName +
-        "】工作表中找不到手機相符且欄A為「未勾選(false)」的登記紀錄，無法自動註記，請人工核對。",
+        "】工作表中找不到手機相符且欄A為「未勾選(false)」的登記紀錄，亦找不到含「給空白」的補交記錄，無法自動註記，請人工核對。",
     );
   }
 }
