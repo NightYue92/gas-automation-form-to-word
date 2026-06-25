@@ -59,10 +59,26 @@ function onFormSubmitTrigger(e) {
   // (B) 處理諮商時間：轉成 m/d(星期) hh:mm (24小時制)
   var formattedConsultTime = "未提供時間";
   if (consultTime) {
-    var cDate =
-      consultTime instanceof Date ? consultTime : new Date(consultTime);
+    var cDate = null;
 
-    if (!isNaN(cDate.getTime())) {
+    var twTimeMatch = consultTime
+      .toString()
+      .match(/(\d{4})\/(\d{1,2})\/(\d{1,2})\s*(上午|下午)\s*(\d{1,2}):(\d{2})/);
+    if (twTimeMatch) {
+      var year = parseInt(twTimeMatch[1], 10);
+      var month = parseInt(twTimeMatch[2], 10) - 1;
+      var day = parseInt(twTimeMatch[3], 10);
+      var ampm = twTimeMatch[4];
+      var hour = parseInt(twTimeMatch[5], 10);
+      var minute = parseInt(twTimeMatch[6], 10);
+      if (ampm === "下午" && hour !== 12) hour += 12;
+      if (ampm === "上午" && hour === 12) hour = 0;
+      cDate = new Date(year, month, day, hour, minute, 0);
+    } else {
+      cDate = consultTime instanceof Date ? consultTime : new Date(consultTime);
+    }
+
+    if (cDate && !isNaN(cDate.getTime())) {
       var month = cDate.getMonth() + 1;
       var date = cDate.getDate();
       var hours = ("0" + cDate.getHours()).slice(-2);
@@ -242,12 +258,10 @@ function onFormSubmitTrigger(e) {
     consultTime
   ) {
     try {
-      var cDateForFolder =
-        consultTime instanceof Date ? consultTime : new Date(consultTime);
-      if (!isNaN(cDateForFolder.getTime())) {
-        // 取得 "m/d" 作為資料夾名稱（例如 "6/23"）
-        consultDateLabel =
-          cDateForFolder.getMonth() + 1 + "/" + cDateForFolder.getDate();
+      // 直接從已解析成功的 formattedConsultTime（格式為 "m/d(星期)HH:mm"）擷取日期
+      var folderDateMatch = formattedConsultTime.match(/^(\d{1,2})\/(\d{1,2})/);
+      if (folderDateMatch) {
+        consultDateLabel = folderDateMatch[1] + "/" + folderDateMatch[2];
       }
     } catch (err) {
       consultDateLabel = "";
@@ -785,8 +799,8 @@ function batchSearchAndGenerateWord() {
 
     var currentRow = s + 2;
     searchSheet.getRange(currentRow, 2).setValue(rowResult);
-    searchSheet.getRange(currentRow, 3).setValue(new Date());
-    searchSheet.getRange(currentRow, 4).setValue(showTimeResult);
+    searchSheet.getRange(currentRow, 3).setValue(showTimeResult);
+    searchSheet.getRange(currentRow, 4).setValue(new Date());
   }
 
   SpreadsheetApp.getUi().alert("🎉 個案資料製作已執行完畢！");
