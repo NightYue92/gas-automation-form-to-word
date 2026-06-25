@@ -1131,6 +1131,7 @@ function sendDailyUpcomingCaseReminder() {
   var templateFolderId = scriptProperties.getProperty("TEMPLATE_FOLDER_ID");
   var targetFolderId = scriptProperties.getProperty("TARGET_FOLDER_ID");
   var alertEmail = scriptProperties.getProperty("ALERT_EMAIL");
+  var summaryEmails = scriptProperties.getProperty("SUMMARY_EMAILS");
 
   // ── 0. 決定要製作哪幾天 ──────────────────────────────────────────────
   var today = new Date();
@@ -1356,9 +1357,9 @@ function sendDailyUpcomingCaseReminder() {
     "\n\n" +
     "本信件由系統自動發送。";
 
-  if (alertEmail) {
+  if (summaryEmails) {
     MailApp.sendEmail(
-      alertEmail,
+      summaryEmails,
       "【自動化系統】諮商空白表格製作完畢（" + rangeLabel + "）",
       emailBody,
     );
