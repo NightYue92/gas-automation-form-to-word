@@ -571,7 +571,7 @@ function sendDailyErrorSummaryEmail() {
       successList.push(
         "• [" +
           formattedExecTime +
-          " 成功] " +
+          " 成功]\n" +
           company +
           " " +
           name +
